@@ -10,6 +10,8 @@ import {
   jaccard,
   adfToText,
   daysBetween,
+  compareIssueKeys,
+  compareTriageRows,
 } from "../src/scoring.js";
 
 const NOW = "2026-11-23T00:00:00.000Z";
@@ -205,4 +207,47 @@ test("urgency labels and blocked status raise the score", () => {
   assert.equal(urgent.score - plain.score, 10);
   const blocked = scoreIssue(normalizeIssue(jiraIssue({ status: { name: "Blocked" } }), NOW));
   assert.ok(blocked.score > plain.score);
+});
+
+test("compareIssueKeys orders numbers numerically within a project", () => {
+  assert.ok(compareIssueKeys("PROJ-5", "PROJ-37") < 0); // 5 < 37, not "37" < "5"
+  assert.ok(compareIssueKeys("PROJ-37", "PROJ-5") > 0);
+  assert.equal(compareIssueKeys("PROJ-5", "PROJ-5"), 0);
+  assert.equal(compareIssueKeys("PROJ-05", "PROJ-5"), -1); // same number, different padding: lexical fallback
+  assert.ok(compareIssueKeys("AAA-1", "BBB-1") < 0);
+  assert.ok(compareIssueKeys("PROJ-X", "PROJ-Y") < 0);
+  assert.equal(compareIssueKeys(null, null), 0);
+  assert.ok(compareIssueKeys(null, "PROJ-1") < 0);
+});
+
+test("compareTriageRows: score first, then older, then smaller key", () => {
+  const row = (key, score, ageDays) => ({ key, score, ageDays });
+  // Score dominates everything.
+  assert.ok(compareTriageRows(row("A-1", 80, 1), row("A-2", 70, 900)) < 0);
+  // Equal score: older issue first.
+  assert.ok(compareTriageRows(row("A-1", 50, 90), row("A-2", 50, 5)) < 0);
+  assert.ok(compareTriageRows(row("A-2", 50, 5), row("A-1", 50, 90)) > 0);
+  // Equal score and age: smaller key first, numerically.
+  assert.ok(compareTriageRows(row("MOBL-5", 50, 10), row("MOBL-37", 50, 10)) < 0);
+  assert.ok(compareTriageRows(row("MOBL-37", 50, 10), row("MOBL-5", 50, 10)) > 0);
+  assert.equal(compareTriageRows(row("MOBL-5", 50, 10), row("MOBL-5", 50, 10)), 0);
+  // Missing fields do not crash and behave as 0 / empty key.
+  assert.equal(compareTriageRows({}, {}), 0);
+  assert.ok(compareTriageRows({ score: 10 }, { score: 10, ageDays: 5 }) > 0);
+});
+
+test("compareTriageRows is a total order: shuffled input sorts identically", () => {
+  const rows = [
+    { key: "MOBL-37", score: 71, ageDays: 991 },
+    { key: "MOBL-5", score: 50, ageDays: 3 },
+    { key: "MOBL-51", score: 55, ageDays: 40 },
+    { key: "MOBL-32", score: 55, ageDays: 40 },
+    { key: "MOBL-8", score: 55, ageDays: 12 },
+    { key: "MOBL-20", score: 53, ageDays: 900 },
+  ];
+  const sorted = [...rows].sort(compareTriageRows).map((r) => r.key);
+  // 71 first; the three 55s: older (40d) before 12d, then MOBL-32 before MOBL-51 by key.
+  assert.deepEqual(sorted, ["MOBL-37", "MOBL-32", "MOBL-51", "MOBL-8", "MOBL-20", "MOBL-5"]);
+  const reversed = [...rows].reverse().sort(compareTriageRows).map((r) => r.key);
+  assert.deepEqual(reversed, sorted);
 });

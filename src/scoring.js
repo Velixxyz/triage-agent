@@ -189,6 +189,43 @@ export function bandFor(score) {
   return "Backlog";
 }
 
+/**
+ * Deterministic key order: same project prefix compares numerically on the
+ * trailing number (PROJ-5 < PROJ-37); anything else falls back to plain
+ * code-unit order. No locale dependence, so the order is identical on
+ * every run and every runtime.
+ */
+export function compareIssueKeys(a, b) {
+  const ka = a ? String(a) : "";
+  const kb = b ? String(b) : "";
+  if (ka === kb) return 0;
+  const ma = ka.match(/^(.*?)(\d+)$/);
+  const mb = kb.match(/^(.*?)(\d+)$/);
+  if (ma && mb && ma[1] === mb[1]) {
+    const na = Number(ma[2]);
+    const nb = Number(mb[2]);
+    if (na !== nb) return na < nb ? -1 : 1;
+    // Same number, different zero-padding (PROJ-001 vs PROJ-1): fall back
+    // to lexical order so distinct keys never compare equal.
+    return ka < kb ? -1 : 1;
+  }
+  return ka < kb ? -1 : 1;
+}
+
+/**
+ * Ranking order for triage rows { score, ageDays, key }: highest score
+ * first; ties go to the older issue (more days open); remaining ties go
+ * to the smaller key. A total order, so the Top 10 is identical on
+ * every run instead of depending on fetch order.
+ */
+export function compareTriageRows(a, b) {
+  const scoreDiff = (b?.score || 0) - (a?.score || 0);
+  if (scoreDiff !== 0) return scoreDiff;
+  const ageDiff = (b?.ageDays || 0) - (a?.ageDays || 0);
+  if (ageDiff !== 0) return ageDiff;
+  return compareIssueKeys(a?.key, b?.key);
+}
+
 /** Tokenize text for duplicate similarity: lowercase words, minus stopwords. */
 export function tokenize(text) {
   return new Set(

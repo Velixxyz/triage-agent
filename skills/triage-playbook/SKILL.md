@@ -24,6 +24,19 @@ comes first, or work through the top items one by one.
    explicitly confirmed the exact change (priority, assignee, labels). After
    applying, report what changed and what the previous values were.
 
+## Tools used
+
+Each tool declared in this skill's manifest dependencies, and how it is used:
+
+- `triage-backlog` — ranks the open backlog with deterministic scores (step 1).
+- `triage-issue` — drills into one item: full breakdown, duplicate detection,
+  and a Teamwork Graph assignee suggestion (step 2).
+- `suggest-assignee` — suggests an owner for an issue from Teamwork Graph data
+  (recent commenters, reporter's team, open workload), used in step 2 when the
+  user asks who should own an item.
+- `apply-triage` — applies the agreed change to an issue, only after the user
+  has explicitly confirmed the exact change (step 3).
+
 ## How the score works
 
 See `references/scoring.md` for the full weights table. The score is

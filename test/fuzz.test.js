@@ -2,7 +2,7 @@
 // synthetic issue, including hostile ones (missing fields, weird values).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeIssue, scoreIssue, bandFor, findDuplicates } from "../src/scoring.js";
+import { normalizeIssue, scoreIssue, bandFor, findDuplicates, compareTriageRows, compareIssueKeys } from "../src/scoring.js";
 import { rankAssignees } from "../src/assignee.js";
 import { buildFixPlan } from "../src/fixplan.js";
 
@@ -69,6 +69,59 @@ test("fuzz: 300 random issues hold scoring invariants", () => {
     assert.ok(plan.steps.length >= 3);
     plan.steps.forEach((s, idx) => assert.equal(s.n, idx + 1));
   }
+});
+
+test("fuzz: ranking 300 random issues is deterministic and a total order", () => {
+  const rnd = mulberry32(20261124);
+  const rows = [];
+  for (let i = 0; i < 300; i++) {
+    const raw = randomIssue(rnd, i);
+    const norm = normalizeIssue(raw);
+    const s = scoreIssue(norm);
+    rows.push({ key: norm.key, score: s.score, ageDays: norm.ageDays });
+  }
+  // Shuffled differently, the sort must land on the identical order.
+  const shuffled = [...rows];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  const sortedA = [...rows].sort(compareTriageRows).map((r) => r.key);
+  const sortedB = [...shuffled].sort(compareTriageRows).map((r) => r.key);
+  assert.deepEqual(sortedA, sortedB, "ranking depends on input order");
+  // Total-order invariants hold down the whole list.
+  const sortedRows = [...rows].sort(compareTriageRows);
+  for (let i = 1; i < sortedRows.length; i++) {
+    const prev = sortedRows[i - 1];
+    const cur = sortedRows[i];
+    assert.ok(prev.score >= cur.score, "scores must not increase");
+    if (prev.score === cur.score) {
+      assert.ok(prev.ageDays >= cur.ageDays, "tied scores: older must come first");
+      if (prev.ageDays === cur.ageDays) {
+        assert.ok(compareIssueKeys(prev.key, cur.key) <= 0, "tied score+age: smaller key first");
+      }
+    }
+  }
+  // 0 score mismatch vs the old score-only order: the Top 10 carries the
+  // exact same multiset of scores — only tie order changes, never membership
+  // by score. (Membership by key may change at a tie boundary: that is the fix.)
+  const oldTop10 = [...rows].sort((a, b) => b.score - a.score).slice(0, 10).map((r) => r.score).sort((a, b) => b - a);
+  const newTop10 = sortedRows.slice(0, 10).map((r) => r.score).sort((a, b) => b - a);
+  assert.deepEqual(newTop10, oldTop10);
+  // Antisymmetry on random pairs.
+  for (let i = 0; i < 100; i++) {
+    const a = rows[Math.floor(rnd() * rows.length)];
+    const b = rows[Math.floor(rnd() * rows.length)];
+    assert.equal(compareTriageRows(a, b), -compareTriageRows(b, a));
+    assert.equal(compareTriageRows(a, a), 0);
+  }
+});
+
+test("fuzz: hostile rows sort without throwing", () => {
+  const hostileRows = [{}, { key: null }, { score: "x" }, { score: 50 }, { key: "A-1", score: 50, ageDays: -3 }, { key: "A-2", score: 50, ageDays: "old" }];
+  assert.doesNotThrow(() => [...hostileRows].sort(compareTriageRows));
+  assert.doesNotThrow(() => compareIssueKeys("🚀-1", "🚀-2"));
+  assert.doesNotThrow(() => compareIssueKeys(undefined, undefined));
 });
 
 test("fuzz: adversarial fixtures never crash", () => {

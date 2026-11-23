@@ -33,9 +33,10 @@ export async function getIssue(issueKey) {
 
 /**
  * Search issues with JQL (POST /rest/api/3/search/jql — the current v3 API;
- * GET /search is deprecated). Returns { ok, issues, isLast, error }.
+ * GET /search is deprecated). Returns { ok, issues, isLast, total, error }.
+ * `startAt` pages through large result sets (maxResults caps at 100/page).
  */
-export async function searchIssues(jql, { fields = ISSUE_FIELDS, maxResults = 25 } = {}) {
+export async function searchIssues(jql, { fields = ISSUE_FIELDS, maxResults = 25, startAt = 0 } = {}) {
   // POST /search/jql expects `fields` as an ARRAY of strings; a
   // comma-separated string is rejected with 400 (live bug found 23 Nov 2026:
   // every duplicate search failed until this was fixed).
@@ -45,7 +46,7 @@ export async function searchIssues(jql, { fields = ISSUE_FIELDS, maxResults = 25
   const res = await api.asUser().requestJira(route`/rest/api/3/search/jql`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ jql, fields: fieldList, maxResults }),
+    body: JSON.stringify({ jql, fields: fieldList, maxResults, startAt }),
   });
   if (!res.ok) return { ok: false, issues: [], error: `Issue search failed (${res.status}).` };
   const data = await res.json();
@@ -53,7 +54,51 @@ export async function searchIssues(jql, { fields = ISSUE_FIELDS, maxResults = 25
   for (const issue of issues) {
     issue.fields.descriptionText = adfToText(issue.fields.description, 500);
   }
-  return { ok: true, issues, isLast: data.isLast !== false };
+  return {
+    ok: true,
+    issues,
+    isLast: data.isLast !== false,
+    total: typeof data.total === "number" ? data.total : null,
+  };
+}
+
+// Safety cap for full-backlog fetches: 10 pages x 100 rows = 1000 issues.
+// Rovo actions give up after ~20s, so an unbounded loop over a 10k-issue
+// backlog would time out instead of ranking anything.
+export const SEARCH_ALL_MAX_PAGES = 10;
+
+/**
+ * Fetch ALL issues matching a JQL, page by page (100 rows per request).
+ * Returns { ok, issues, total, truncated, pages, partialError, error }.
+ * `truncated` means more issues exist than were fetched (cap hit); the
+ * caller must say so. A failed page AFTER the first does not throw the
+ * ranking away: already-fetched issues are returned with `partialError`.
+ */
+export async function searchAllIssues(jql, { fields = ISSUE_FIELDS, pageSize = 100 } = {}) {
+  const all = [];
+  let total = null;
+  let pages = 0;
+  let lastIsLast = false;
+  let partialError = null;
+  for (let page = 0; page < SEARCH_ALL_MAX_PAGES; page++) {
+    const startAt = page * pageSize;
+    const r = await searchIssues(jql, { fields, maxResults: pageSize, startAt });
+    if (!r.ok) {
+      if (pages === 0) return { ok: false, issues: [], error: r.error };
+      partialError = r.error;
+      break;
+    }
+    pages += 1;
+    all.push(...r.issues);
+    if (typeof r.total === "number") total = r.total;
+    lastIsLast = r.isLast;
+    if (r.isLast || r.issues.length === 0) break;
+    if (total !== null && all.length >= total) break;
+  }
+  const truncated = total !== null
+    ? all.length < total
+    : pages === SEARCH_ALL_MAX_PAGES && !lastIsLast;
+  return { ok: true, issues: all, total, truncated, pages, partialError };
 }
 
 /** Recent comments on an issue, newest first. Returns { ok, comments, total, error }. */

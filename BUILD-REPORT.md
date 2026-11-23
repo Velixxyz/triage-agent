@@ -95,3 +95,32 @@ deploy / install / demo video / Devpost submission.
   build (no `forge login` / deploy / install / tunnel / register was run).
 - No credentials of any kind exist in the repository. `node_modules/` is
   gitignored; the only secret-adjacent file is none.
+
+## v2.5.0 — full-backlog pagination + deterministic tie-break (23 Nov 2026)
+
+Implements the first two "What's next" items from the Devpost draft.
+
+- `src/jira.js`: `searchIssues` gains `startAt` + returns `total`; new
+  `searchAllIssues` pages through the whole backlog (100 rows/request,
+  `SEARCH_ALL_MAX_PAGES = 10` → max 1000 issues, so a giant backlog cannot
+  blow the ~20s Rovo budget). A failed page after the first returns the
+  issues fetched so far with `partialError`; `truncated` is set when more
+  issues exist than were fetched.
+- `src/scoring.js`: new `compareTriageRows` (score desc, then older issue
+  first, then smaller key) and `compareIssueKeys` (numeric-aware:
+  PROJ-5 < PROJ-37; lexical fallback for zero-padded equals). Scoring
+  functions themselves untouched — scores are byte-identical to v2.4.0.
+- `src/index.js`: `triageBacklog` uses `searchAllIssues` + `compareTriageRows`
+  and reports in `notes` when ties were broken, when ranking is partial,
+  or when the backlog was truncated.
+- Verification: `npm test` 50/50 (was 41/41; +9 new: 3 comparator unit,
+  4 handler incl. 250-issue/3-page mock + truncation + partial failure,
+  2 ranking fuzz). Fuzz: 300 seeded random issues — ranking identical
+  from two different shuffles, total-order invariants hold, Top-10 score
+  multiset identical to the old score-only order (0 score mismatch).
+- Independent review: Groq `openai/gpt-oss-120b` (free chain) — verdict
+  APPROVE WITH NITS; both functional nits applied (null key → "" instead
+  of "null"; zero-padded equal numbers get a lexical fallback). Third nit
+  (tie counting) is cosmetic only; the note text is already accurate.
+- Suggested version: **v2.5.0** (minor bump — new capability, no breaking
+  change to scores or response shape). Not deployed or pushed by this build.

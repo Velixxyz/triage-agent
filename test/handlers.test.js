@@ -63,6 +63,39 @@ const route = (strings, ...vals) =>
 
 mock.module("@forge/api", { defaultExport: apiMock, namedExports: { route } });
 const handlers = await import("../src/index.js");
+const { normalizeIssue, scoreIssue } = await import("../src/scoring.js");
+
+function mockIssue(key, opts = {}) {
+  const {
+    priority = "Low",
+    type = "Story",
+    created = "2026-11-22T00:00:00.000Z",
+    updated = "2026-11-22T00:00:00.000Z",
+    labels = [],
+    assignee = { displayName: "Ada", accountId: "a1" },
+    summary = "Some work",
+    description = "short",
+    comments = 0,
+  } = opts;
+  return {
+    key,
+    id: key,
+    fields: {
+      summary,
+      issuetype: { name: type },
+      status: { name: "To Do" },
+      priority: { name: priority },
+      assignee,
+      reporter: { displayName: "Bob", accountId: "rep1" },
+      labels,
+      components: [],
+      created,
+      updated,
+      description,
+      comment: { total: comments, comments: [] },
+    },
+  };
+}
 
 test("triage-backlog ranks mocked issues, highest score first", async () => {
   jiraStub = (url) => {
@@ -78,6 +111,107 @@ test("triage-backlog ranks mocked issues, highest score first", async () => {
   assert.equal(out.ranked[0].score, 79); // 24 priority + 14 age + 15 bug + 6 activity + 5 desc + 5 unassigned + 10 urgency
   assert.equal(out.ranked[0].band, "High");
   assert.ok(out.ranked[0].topReasons.length > 0);
+  assert.ok(!out.notes.join(" ").includes("Ties in the Top")); // distinct scores: no tie note
+});
+
+test("triage-backlog pages through 250 issues and finds the top scorer on page 3", async () => {
+  const allIssues = Array.from({ length: 250 }, (_, i) => mockIssue(`MOBL-${i}`));
+  // The star sits at the very end of page 3 (index 249): Highest Bug, old,
+  // production label, unassigned, long description, 8 comments.
+  allIssues[249] = mockIssue("MOBL-999", {
+    priority: "Highest",
+    type: "Bug",
+    created: "2024-01-01T00:00:00.000Z",
+    updated: "2024-01-01T00:00:00.000Z",
+    labels: ["production"],
+    assignee: null,
+    description: "Billing system sends duplicate bills to customers every month.",
+    comments: 8,
+  });
+  const seenStartAt = [];
+  jiraStub = (url, opts) => {
+    if (url.includes("/rest/api/3/search/jql")) {
+      const body = JSON.parse(opts.body || "{}");
+      seenStartAt.push(body.startAt || 0);
+      const start = body.startAt || 0;
+      const page = allIssues.slice(start, start + (body.maxResults || 100));
+      const end = start + page.length;
+      return fakeResponse(200, { issues: page, isLast: end >= allIssues.length, total: allIssues.length });
+    }
+    return fakeResponse(404, {});
+  };
+  const out = await handlers.triageBacklog({ limit: 10 });
+  assert.deepEqual(seenStartAt, [0, 100, 200]); // three pages of 100
+  assert.equal(out.consideredCount, 250);
+  assert.equal(out.ranked[0].key, "MOBL-999");
+  assert.equal(out.ranked[0].score, 98); // 30 + 15 + 10 + 15 + 8 + 5 + 5 + 10
+  // 0 score mismatch vs the scoring engine directly: same issue, same score.
+  const direct = scoreIssue(normalizeIssue(allIssues[249]));
+  assert.equal(out.ranked[0].score, direct.score);
+  assert.equal(out.ranked[0].band, direct.band);
+});
+
+test("triage-backlog breaks ties by age, then key, and says so", async () => {
+  // Age/staleness points are capped for all four (created+updated far
+  // enough back), so all four score identically — only ageDays and key differ.
+  const tied = [
+    mockIssue("TIE-37", { created: "2026-08-01T00:00:00.000Z", updated: "2026-08-01T00:00:00.000Z" }),
+    mockIssue("TIE-5", { created: "2026-08-01T00:00:00.000Z", updated: "2026-08-01T00:00:00.000Z" }),
+    mockIssue("TIE-9", { created: "2026-08-01T00:00:00.000Z", updated: "2026-08-01T00:00:00.000Z" }),
+    mockIssue("TIE-100", { created: "2026-06-01T00:00:00.000Z", updated: "2026-06-01T00:00:00.000Z" }),
+  ];
+  jiraStub = (url) => {
+    if (url.includes("/rest/api/3/search/jql")) {
+      return fakeResponse(200, { issues: tied, isLast: true, total: 4 });
+    }
+    return fakeResponse(404, {});
+  };
+  const out = await handlers.triageBacklog({ limit: 10 });
+  assert.ok(out.ranked.every((r) => r.score === out.ranked[0].score), "all four must tie on score");
+  // Oldest first (TIE-100, Sep 1), then smaller key numerically (5 < 9 < 37).
+  assert.deepEqual(out.ranked.map((r) => r.key), ["TIE-100", "TIE-5", "TIE-9", "TIE-37"]);
+  assert.ok(out.notes.some((n) => n.includes("Ties in the Top") && n.includes("older issue first") && n.includes("smaller key")));
+});
+
+test("triage-backlog stops at the page cap and reports truncation", async () => {
+  const seenStartAt = [];
+  jiraStub = (url, opts) => {
+    if (url.includes("/rest/api/3/search/jql")) {
+      const body = JSON.parse(opts.body || "{}");
+      seenStartAt.push(body.startAt || 0);
+      const start = body.startAt || 0;
+      return fakeResponse(200, {
+        issues: Array.from({ length: 100 }, (_, i) => mockIssue(`BIG-${start + i}`)),
+        isLast: false,
+        total: 1500,
+      });
+    }
+    return fakeResponse(404, {});
+  };
+  const out = await handlers.triageBacklog({ limit: 10 });
+  assert.equal(seenStartAt.length, 10); // SEARCH_ALL_MAX_PAGES
+  assert.equal(out.consideredCount, 1000);
+  assert.ok(out.notes.some((n) => n.includes("Only the first 1000") && n.includes("1500 total")));
+});
+
+test("triage-backlog ranks what it fetched when a later page fails", async () => {
+  jiraStub = (url, opts) => {
+    if (url.includes("/rest/api/3/search/jql")) {
+      const body = JSON.parse(opts.body || "{}");
+      if ((body.startAt || 0) === 0) {
+        return fakeResponse(200, {
+          issues: Array.from({ length: 100 }, (_, i) => mockIssue(`P-${i}`)),
+          isLast: false,
+          total: 250,
+        });
+      }
+      return fakeResponse(500, { errorMessages: ["boom"] });
+    }
+    return fakeResponse(404, {});
+  };
+  const out = await handlers.triageBacklog({ limit: 10 });
+  assert.equal(out.consideredCount, 100);
+  assert.ok(out.notes.some((n) => n.includes("Ranking is partial")));
 });
 
 test("triage-issue returns score, breakdown, duplicates and assignee", async () => {

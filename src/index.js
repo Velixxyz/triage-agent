@@ -6,9 +6,9 @@
 // Keep responses small: Rovo actions handle ~1 MB in practice and give up
 // after about 20 seconds, so lists are capped and text is truncated.
 
-import { getIssue, searchIssues, getRecentComments, personName, priorityIdByName, updateIssue } from "./jira.js";
+import { getIssue, searchIssues, searchAllIssues, getRecentComments, personName, priorityIdByName, updateIssue } from "./jira.js";
 import { twg, twgAll, Q, userAri, workItemAri } from "./twg.js";
-import { normalizeIssue, scoreIssue, findDuplicates, tokenize } from "./scoring.js";
+import { normalizeIssue, scoreIssue, findDuplicates, tokenize, compareTriageRows } from "./scoring.js";
 import { rankAssignees } from "./assignee.js";
 import { buildFixPlan } from "./fixplan.js";
 
@@ -155,12 +155,13 @@ export async function triageBacklog(payload) {
     // fetching only `limit` rows with ORDER BY updated DESC silently drops
     // high-scoring stale items (live bug found 23 Nov 2026: MOBL-37 scored
     // 71 but never appeared in the Top 10 because it had not been updated
-    // in 991 days). One page of 100 covers the demo project (37 items) and
-    // most real backlogs; larger backlogs rank their first 100 open issues.
+    // in 991 days). searchAllIssues pages through the whole backlog
+    // (100/page, capped at 1000 issues so a giant backlog cannot blow the
+    // ~20s action budget); the cap/truncation is reported in `notes`.
     const jql = projectKey
       ? `project = ${projectKey} AND statusCategory != Done`
       : `statusCategory != Done`;
-    const r = await searchIssues(jql, { maxResults: 100 });
+    const r = await searchAllIssues(jql);
     if (!r.ok) return { error: r.error };
 
     const rows = r.issues.map((raw) => {
@@ -186,13 +187,26 @@ export async function triageBacklog(payload) {
         ageDays: issue.ageDays,
       };
     });
-    rows.sort((a, b) => b.score - a.score);
+    rows.sort(compareTriageRows);
+    const ranked = rows.slice(0, limit);
+    // Ties are broken deterministically (older issue first, then smaller
+    // key) — say so in the output when the returned Top N actually had one.
+    let ties = 0;
+    for (let i = 1; i < ranked.length; i++) if (ranked[i].score === ranked[i - 1].score) ties += 1;
+    if (ties > 0) {
+      notes.push(`Ties in the Top ${ranked.length} were broken deterministically: older issue first, then smaller key (e.g. PROJ-5 before PROJ-37).`);
+    }
+    if (r.partialError) {
+      notes.push(`Ranking is partial: an issue page failed to load (${r.partialError}).`);
+    } else if (r.truncated) {
+      notes.push(`Only the first ${r.issues.length} open issues were ranked; the backlog has more${r.total ? ` (${r.total} total)` : ""}.`);
+    }
     log("triage-backlog", { ms: Date.now() - t0, project: projectKey, rows: rows.length });
     return {
       project: projectKey,
       consideredCount: rows.length,
       triagedCount: Math.min(limit, rows.length),
-      ranked: rows.slice(0, limit),
+      ranked,
       notes: [
         ...notes,
         "Scores are deterministic (priority, age, staleness, type, activity, description, assignment, urgency). Call triage-issue on a key for duplicates and a Teamwork Graph assignee suggestion.",
