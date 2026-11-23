@@ -1,0 +1,232 @@
+# Triage Agent — Atlassian Codegeist 2026 (Software Teams)
+# Bonuses targeted: Best Agents (Rovo) + Best app with Atlassian MCP.
+#
+# IMPORTANT: app.id below is a PLACEHOLDER. The main agent fills in the real
+# id with `forge create` / `forge register` before deploying. Everything else
+# in this file is final.
+
+modules:
+  rovo:agent:
+    - key: triage-agent
+      name: "Triage Agent"
+      description: Ranks your Jira backlog with explainable priority scores, finds
+        duplicates, and suggests owners from Teamwork Graph.
+      prompt: resource:agent-prompt;agent-prompt.md
+      conversationStarters:
+        - Triage the backlog
+        - What should we work on first?
+        - Who should work on this issue?
+      actions:
+        - triage-backlog
+        - triage-issue
+        - summarize-issue
+        - find-duplicate
+        - draft-fix-plan
+        - suggest-assignee
+        - apply-triage
+      skills:
+        - triage-playbook
+        - issue-analyst
+      followUpPrompt: "Suggest one useful follow-up: drill into the top item, check
+        duplicates, or apply the agreed decision."
+
+  rovo:mcp:
+    - key: triage-mcp
+      name: "Triage MCP"
+      tools:
+        - triage-backlog
+        - triage-issue
+        - summarize-issue
+        - find-duplicate
+        - draft-fix-plan
+        - suggest-assignee
+
+  rovo:skill:
+    - key: triage-playbook
+      source:
+        dir: skills/triage-playbook
+      dependencies:
+        tools:
+          - triage-backlog
+          - triage-issue
+          - suggest-assignee
+          - apply-triage
+    - key: issue-analyst
+      source:
+        dir: skills/issue-analyst
+      dependencies:
+        tools:
+          - summarize-issue
+          - find-duplicate
+          - draft-fix-plan
+
+  action:
+    - key: triage-backlog
+      name: Triage the backlog
+      function: triageBacklog
+      actionVerb: GET
+      description: |
+        Rank the open issues of a Jira project (or every project) by a
+        deterministic priority score, with reasons. Use it FIRST for
+        "triage the backlog" or "what should we work on first" - never
+        triage issues one by one instead.
+      inputs:
+        projectKey:
+          title: Project key
+          type: string
+          required: false
+          description: The Jira project key, for example PROJ. Leave empty to cover all
+            visible projects.
+        limit:
+          title: Max issues
+          type: integer
+          required: false
+          description: How many open issues to rank (1-25, default 10).
+
+    - key: triage-issue
+      name: Triage one issue
+      function: triageIssue
+      actionVerb: GET
+      description: |
+        Triage a single Jira issue: deterministic priority score with a full reason
+        breakdown, duplicate check, and a Teamwork Graph assignee suggestion.
+        Use it for "how urgent is PROJ-123" or "triage this issue".
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: false
+          description: The Jira issue key, for example PROJ-123. Leave empty to use the
+            work item open on screen.
+
+    - key: summarize-issue
+      name: Summarize an issue
+      function: summarizeIssue
+      actionVerb: GET
+      description: |
+        Summarize one Jira issue: status, age, participants, recent comments and
+        open questions. Use it for "summarize PROJ-123" or "what is the status of this issue".
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: false
+          description: The Jira issue key, for example PROJ-123. Leave empty to use the
+            work item open on screen.
+
+    - key: find-duplicate
+      name: Find duplicates
+      function: findDuplicate
+      actionVerb: GET
+      description: |
+        Check whether a Jira issue was already reported: searches the same project
+        for issues with overlapping wording and ranks them by token similarity.
+        Use it for "is PROJ-123 a duplicate" or "has this been reported before".
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: false
+          description: The Jira issue key, for example PROJ-123. Leave empty to use the
+            work item open on screen.
+
+    - key: draft-fix-plan
+      name: Draft a fix plan
+      function: draftFixPlan
+      actionVerb: GET
+      description: |
+        Draft a step-by-step fix plan for a Jira issue: reproduce and confirm,
+        resolve the duplicate question, fix at the root cause, verify and close.
+        Includes an owner hint and a target response time.
+        Use it for "draft a fix plan for PROJ-123".
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: false
+          description: The Jira issue key, for example PROJ-123. Leave empty to use the
+            work item open on screen.
+
+    - key: suggest-assignee
+      name: Suggest an assignee
+      function: suggestAssignee
+      actionVerb: GET
+      description: |
+        Suggest who should own a Jira issue, from Teamwork Graph: recent
+        commenters on the issue, members of the reporter's teams, and each
+        candidate's open workload. Use it for "who should work on PROJ-123".
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: false
+          description: The Jira issue key, for example PROJ-123. Leave empty to use the
+            work item open on screen.
+
+    - key: apply-triage
+      name: Apply a triage decision
+      function: applyTriage
+      actionVerb: UPDATE
+      description: |
+        Apply an agreed triage decision to a Jira issue: set priority, assignee
+        and/or add labels. Only call this after the user explicitly confirmed
+        the exact change. Use it for "apply it" after agreeing a decision.
+      inputs:
+        issueKey:
+          title: Issue key
+          type: string
+          required: true
+          description: The Jira issue key, for example PROJ-123.
+        priority:
+          title: Priority
+          type: string
+          required: false
+          description: "Priority to set: Highest, High, Medium, Low or Lowest."
+        assigneeAccountId:
+          title: Assignee account ID
+          type: string
+          required: false
+          description: Atlassian account ID of the new assignee.
+        addLabels:
+          title: Labels to add
+          type: string
+          required: false
+          description: Comma-separated labels to add, for example "triaged,ready".
+
+  function:
+    - key: triageBacklog
+      handler: index.triageBacklog
+    - key: triageIssue
+      handler: index.triageIssue
+    - key: summarizeIssue
+      handler: index.summarizeIssue
+    - key: findDuplicate
+      handler: index.findDuplicate
+    - key: draftFixPlan
+      handler: index.draftFixPlan
+    - key: suggestAssignee
+      handler: index.suggestAssignee
+    - key: applyTriage
+      handler: index.applyTriage
+
+resources:
+  - key: agent-prompt
+    path: prompts
+
+permissions:
+  scopes:
+    - read:jira-work
+    - read:jira-user
+    - write:jira-work
+    - read:graph:issue:jira
+    - read:graph:issue-status:jira
+    - read:graph:issue-comment:jira
+    - read:graph:user:atlassian
+    - read:graph:team:atlassian
+
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/74501fcc-1fda-4dea-8bea-0f7d251b2cb3

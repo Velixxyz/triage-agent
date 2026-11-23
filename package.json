@@ -1,0 +1,16 @@
+{
+  "dependencies": {
+    "@forge/api": "8.4.0"
+  },
+  "description": "Forge Rovo agent that triages Jira issues with deterministic, explainable priority scoring, duplicate detection and Teamwork Graph based assignee suggestions. Built for Atlassian Codegeist 2026 (Software Teams).",
+  "license": "MIT",
+  "name": "triage-agent",
+  "private": true,
+  "scripts": {
+    "test": "node --experimental-test-module-mocks --test test/scoring.test.js test/assignee.test.js test/fixplan.test.js test/manifest.test.js test/fuzz.test.js test/handlers.test.js"
+  },
+  "version": "0.1.0",
+  "devDependencies": {
+    "yaml": "^2.9.1"
+  }
+}
